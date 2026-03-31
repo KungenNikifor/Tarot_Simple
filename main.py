@@ -65,7 +65,7 @@ async def get_ai_interpretation(question, cards):
             prompt = (f"Ты мудрый таролог. Вопрос: '{question}'. "
                       f"Карты: {', '.join(cards)}. Дай краткую трактовку (до 700 симв).")
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            gen_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+            gen_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
             async with session.post(gen_url, json=payload) as resp:
                 result = await resp.json()
                 if 'candidates' in result:
