@@ -58,6 +58,13 @@ class TarotSteps(StatesGroup):
     choosing_deck = State()
     choosing_cards = State()
 
+class TarotSteps(StatesGroup):
+    waiting_for_start = State()
+    waiting_for_question = State()
+    choosing_deck = State()
+    choosing_cards = State()
+    adjusting_card = State() # Шаг для ручного переворота
+
 
 async def get_ai_interpretation(question, cards):
     try:
@@ -105,30 +112,72 @@ async def select_deck(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(TarotSteps.choosing_cards)
 
 
+# Выбор новой карты и вход в режим "переворота"
 @dp.callback_query(F.data == "draw_card", TarotSteps.choosing_cards)
-async def draw_card(callback: types.CallbackQuery, state: FSMContext):
+async def start_adjusting_card(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     chosen = data.get('chosen_cards', [])
-    new_card = random.choice([c for c in TAROT_DECK if c not in [x['name'] for x in chosen]])
-    chosen.append({"name": new_card, "orientation": random.choice(["Прямая", "Перевернутая"])})
-    await state.update_data(chosen_cards=chosen)
+
+    # Выбираем случайную карту, которой еще нет в раскладе
+    available = [c for c in TAROT_DECK if c not in [x['name'] for x in chosen]]
+    new_card_name = random.choice(available)
+
+    # Сохраняем временную карту во временную переменную state
+    await state.update_data(temp_card={"name": new_card_name, "orientation": "Прямая"})
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🔄 Перевернуть", callback_data="flip_card"))
+    builder.row(types.InlineKeyboardButton(text="✅ Оставить так", callback_data="confirm_card"))
+
+    await callback.message.edit_text(
+        f"Выпала карта: **{new_card_name}**\nПоложение: **Прямая**\n\nЖелаете перевернуть?",
+        parse_mode="Markdown",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(TarotSteps.adjusting_card)
+
+
+# Логика кнопки "Перевернуть"
+@dp.callback_query(F.data == "flip_card", TarotSteps.adjusting_card)
+async def flip_card(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    temp_card = data['temp_card']
+
+    # Меняем положение на противоположное
+    new_orient = "Перевернутая" if temp_card['orientation'] == "Прямая" else "Прямая"
+    temp_card['orientation'] = new_orient
+
+    await state.update_data(temp_card=temp_card)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🔄 Перевернуть еще", callback_data="flip_card"))
+    builder.row(types.InlineKeyboardButton(text="✅ Оставить так", callback_data="confirm_card"))
+
+    # Используем edit_text, чтобы кнопка нажималась "бесшовно"
+    await callback.message.edit_text(
+        f"Выпала карта: **{temp_card['name']}**\nПоложение: **{new_orient}**\n\nЖелаете перевернуть?",
+        parse_mode="Markdown",
+        reply_markup=builder.as_markup()
+    )
+
+
+# Подтверждение выбора карты
+@dp.callback_query(F.data == "confirm_card", TarotSteps.adjusting_card)
+async def confirm_card(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    chosen = data.get('chosen_cards', [])
+    chosen.append(data['temp_card'])
+
+    await state.update_data(chosen_cards=chosen, temp_card=None)
 
     if len(chosen) < 3:
         builder = InlineKeyboardBuilder().row(
-            types.InlineKeyboardButton(text="🃏 Тянуть еще", callback_data="draw_card"))
-        await callback.message.edit_text(f"Выбрано: {len(chosen)}/3", reply_markup=builder.as_markup())
+            types.InlineKeyboardButton(text="🃏 Тянуть следующую", callback_data="draw_card"))
+        await callback.message.edit_text(f"Карта принята! Выбрано: {len(chosen)}/3", reply_markup=builder.as_markup())
+        await state.set_state(TarotSteps.choosing_cards)
     else:
-        await callback.message.edit_text("⏳ Изучаю знаки...")
-        cards_str = [f"{c['name']} ({c['orientation']})" for c in chosen]
-        interpretation = await get_ai_interpretation(data['user_question'], cards_str)
-        media = [InputMediaPhoto(media=types.FSInputFile(f"images/{data['selected_deck']}/{c['name']}.jpg"))
-                 for c in chosen if os.path.exists(f"images/{data['selected_deck']}/{c['name']}.jpg")]
-        if media: await callback.message.answer_media_group(media=media)
-        builder = InlineKeyboardBuilder().row(
-            types.InlineKeyboardButton(text="✨ Новый запрос", callback_data="start_divination"))
-        await callback.message.answer(f"🔮 **Расклад:**\n" + "\n".join(cards_str) + f"\n\n{interpretation}",
-                                      parse_mode="Markdown", reply_markup=builder.as_markup())
-        await state.clear()
+        # Если это была 3-я карта, запускаем финал (трактовку)
+        await callback.message.edit_text("⏳ Все карты выбраны. Изучаю знаки судьбы...")
 
 
 # 4. ЗАПУСК
