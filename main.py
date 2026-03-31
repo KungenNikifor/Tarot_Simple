@@ -4,7 +4,7 @@ import logging
 import aiohttp
 import os
 from dotenv import load_dotenv
-from aiohttp import web # Добавили для веб-сервера
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# --- Блок веб-сервера для Render ---
+# --- ВЕБ-СЕРВЕР ДЛЯ ПОДДЕРЖКИ ЖИЗНИ НА RENDER ---
 async def handle_healthcheck(request):
     return web.Response(text="Bot is alive!")
 
@@ -32,7 +32,6 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', os.getenv('PORT', 10000))
     await site.start()
-    logging.info("Web server started for healthchecks")
 # ----------------------------------
 
 # Список карт
@@ -57,34 +56,33 @@ class TarotSteps(StatesGroup):
     waiting_for_question = State()
     choosing_deck = State()
     choosing_cards = State()
-
-class TarotSteps(StatesGroup):
-    waiting_for_start = State()
-    waiting_for_question = State()
-    choosing_deck = State()
-    choosing_cards = State()
-    adjusting_card = State() # Шаг для ручного переворота
+    adjusting_card = State()
 
 
 async def get_ai_interpretation(question, cards):
     try:
         async with aiohttp.ClientSession() as session:
-            prompt = (f"Ты лаконичный и мудрый таролог. Вопрос: '{question}'. "
+            prompt = (f"Ты мудрый таролог. Вопрос: '{question}'. "
                       f"Карты: {', '.join(cards)}. Дай краткую трактовку (до 700 симв).")
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             gen_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
             async with session.post(gen_url, json=payload) as resp:
                 result = await resp.json()
-                return result['candidates'][0]['content']['parts'][0]['text']
-    except:
-        return "Карты молчат... Попробуйте еще раз."
+                if 'candidates' in result:
+                    return result['candidates'][0]['content']['parts'][0]['text']
+                else:
+                    logging.error(f"Gemini Error: {result}")
+                    return "ИИ временно недоступен. Проверьте API ключ."
+    except Exception as e:
+        logging.error(f"Request Error: {e}")
+        return "Ошибка связи с космосом..."
 
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔮 Начать гадание", callback_data="start_divination"))
-    await message.answer("Добро пожаловать. Готовы узнать правду?", reply_markup=builder.as_markup())
+    builder = InlineKeyboardBuilder().row(
+        types.InlineKeyboardButton(text="🔮 Начать гадание", callback_data="start_divination"))
+    await message.answer("Добро пожаловать в обитель Таро.", reply_markup=builder.as_markup())
     await state.set_state(TarotSteps.waiting_for_start)
 
 
@@ -97,10 +95,11 @@ async def ask_for_question(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(TarotSteps.waiting_for_question)
 async def process_question(message: types.Message, state: FSMContext):
     await state.update_data(user_question=message.text)
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🎨 Классика", callback_data="deck_classic"),
-                types.InlineKeyboardButton(text="🌑 Темная", callback_data="deck_dark"))
-    await message.answer("Выберите колоду:", reply_markup=builder.as_markup())
+    builder = InlineKeyboardBuilder().row(
+        types.InlineKeyboardButton(text="🎨 Классика", callback_data="deck_classic"),
+        types.InlineKeyboardButton(text="🌑 Темная", callback_data="deck_dark")
+    )
+    await message.answer("Выберите стиль колоды:", reply_markup=builder.as_markup())
     await state.set_state(TarotSteps.choosing_deck)
 
 
@@ -108,76 +107,70 @@ async def process_question(message: types.Message, state: FSMContext):
 async def select_deck(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(selected_deck=callback.data.split("_")[1], chosen_cards=[])
     builder = InlineKeyboardBuilder().row(types.InlineKeyboardButton(text="🃏 Тянуть карту", callback_data="draw_card"))
-    await callback.message.edit_text("Пора тянуть карты (нужно 3).", reply_markup=builder.as_markup())
+    await callback.message.edit_text("Пора вытянуть 3 карты.", reply_markup=builder.as_markup())
     await state.set_state(TarotSteps.choosing_cards)
 
 
-# Выбор новой карты и вход в режим "переворота"
 @dp.callback_query(F.data == "draw_card", TarotSteps.choosing_cards)
-async def start_adjusting_card(callback: types.CallbackQuery, state: FSMContext):
+async def start_adjusting(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     chosen = data.get('chosen_cards', [])
-
-    # Выбираем случайную карту, которой еще нет в раскладе
     available = [c for c in TAROT_DECK if c not in [x['name'] for x in chosen]]
     new_card_name = random.choice(available)
-
-    # Сохраняем временную карту во временную переменную state
     await state.update_data(temp_card={"name": new_card_name, "orientation": "Прямая"})
 
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔄 Перевернуть", callback_data="flip_card"))
-    builder.row(types.InlineKeyboardButton(text="✅ Оставить так", callback_data="confirm_card"))
-
-    await callback.message.edit_text(
-        f"Выпала карта: **{new_card_name}**\nПоложение: **Прямая**\n\nЖелаете перевернуть?",
-        parse_mode="Markdown",
-        reply_markup=builder.as_markup()
+    builder = InlineKeyboardBuilder().row(
+        types.InlineKeyboardButton(text="🔄 Перевернуть", callback_data="flip_card"),
+        types.InlineKeyboardButton(text="✅ Оставить", callback_data="confirm_card")
     )
+    await callback.message.edit_text(f"Выпала карта: **{new_card_name}**\nПоложение: **Прямая**",
+                                     parse_mode="Markdown", reply_markup=builder.as_markup())
     await state.set_state(TarotSteps.adjusting_card)
 
 
-# Логика кнопки "Перевернуть"
 @dp.callback_query(F.data == "flip_card", TarotSteps.adjusting_card)
-async def flip_card(callback: types.CallbackQuery, state: FSMContext):
+async def flip(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    temp_card = data['temp_card']
-
-    # Меняем положение на противоположное
-    new_orient = "Перевернутая" if temp_card['orientation'] == "Прямая" else "Прямая"
-    temp_card['orientation'] = new_orient
-
-    await state.update_data(temp_card=temp_card)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔄 Перевернуть еще", callback_data="flip_card"))
-    builder.row(types.InlineKeyboardButton(text="✅ Оставить так", callback_data="confirm_card"))
-
-    # Используем edit_text, чтобы кнопка нажималась "бесшовно"
-    await callback.message.edit_text(
-        f"Выпала карта: **{temp_card['name']}**\nПоложение: **{new_orient}**\n\nЖелаете перевернуть?",
-        parse_mode="Markdown",
-        reply_markup=builder.as_markup()
+    temp = data['temp_card']
+    temp['orientation'] = "Перевернутая" if temp['orientation'] == "Прямая" else "Прямая"
+    await state.update_data(temp_card=temp)
+    builder = InlineKeyboardBuilder().row(
+        types.InlineKeyboardButton(text="🔄 Перевернуть", callback_data="flip_card"),
+        types.InlineKeyboardButton(text="✅ Оставить", callback_data="confirm_card")
     )
+    await callback.message.edit_text(f"Выпала карта: **{temp['name']}**\nПоложение: **{temp['orientation']}**",
+                                     parse_mode="Markdown", reply_markup=builder.as_markup())
 
 
-# Подтверждение выбора карты
 @dp.callback_query(F.data == "confirm_card", TarotSteps.adjusting_card)
-async def confirm_card(callback: types.CallbackQuery, state: FSMContext):
+async def confirm(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     chosen = data.get('chosen_cards', [])
     chosen.append(data['temp_card'])
-
-    await state.update_data(chosen_cards=chosen, temp_card=None)
+    await state.update_data(chosen_cards=chosen)
 
     if len(chosen) < 3:
         builder = InlineKeyboardBuilder().row(
-            types.InlineKeyboardButton(text="🃏 Тянуть следующую", callback_data="draw_card"))
-        await callback.message.edit_text(f"Карта принята! Выбрано: {len(chosen)}/3", reply_markup=builder.as_markup())
+            types.InlineKeyboardButton(text="🃏 Следующая карта", callback_data="draw_card"))
+        await callback.message.edit_text(f"Выбрано {len(chosen)}/3", reply_markup=builder.as_markup())
         await state.set_state(TarotSteps.choosing_cards)
     else:
-        # Если это была 3-я карта, запускаем финал (трактовку)
         await callback.message.edit_text("⏳ Все карты выбраны. Изучаю знаки судьбы...")
+        cards_str = [f"{c['name']} ({c['orientation']})" for c in chosen]
+        interpretation = await get_ai_interpretation(data['user_question'], cards_str)
+
+        media = []
+        for c in chosen:
+            p = f"images/{data['selected_deck']}/{c['name']}.jpg"
+            if os.path.exists(p): media.append(InputMediaPhoto(media=types.FSInputFile(p)))
+
+        if media: await callback.message.answer_media_group(media=media)
+
+        builder = InlineKeyboardBuilder().row(
+            types.InlineKeyboardButton(text="✨ Новый запрос", callback_data="start_divination"))
+        await callback.message.answer(f"🔮 **Расклад:**\n" + "\n".join(cards_str) + f"\n\n{interpretation}",
+                                      parse_mode="Markdown", reply_markup=builder.as_markup())
+        await state.clear()
 
 
 # 4. ЗАПУСК
