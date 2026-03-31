@@ -13,8 +13,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InputMediaPhoto
 
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv('7999144564:AAHT7FKTqCR2lr1uuXTTmtJ9zUOtb61fSIg')
-GEMINI_KEY = os.getenv('AIzaSyC7fo9lVtgNtQ56VTZfZU3ivKuOd7GQzKM')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+GEMINI_KEY = os.getenv('GEMINI_KEY')
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_TOKEN)
